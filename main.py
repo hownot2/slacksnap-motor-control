@@ -26,16 +26,25 @@ dmm2 = None
 
 MOTOR_EN1 = 1
 MOTOR_EN2 = 2
+DISABLED = None
 
 def enable_motors():
+    global DISABLED
+
     logging.info('Enabling both motors...')
     relays.relay_on(MOTOR_EN1)
     relays.relay_on(MOTOR_EN2)
 
+    DISABLED = False
+
 def disable_motors():
+    global DISABLED
+
     logging.info('Disabling both motors...')
     relays.relay_off(MOTOR_EN1)
     relays.relay_off(MOTOR_EN2)
+
+    DISABLED = True
 
 
 async def send_mqtt(topic, message):
@@ -182,6 +191,16 @@ async def monitor_dyn4():
         topic = 'server/position'
         message = str(round(revolutions, 5))
         await send_mqtt(topic, message)
+
+
+        if ONE_MOTOR:
+            if DISABLED is True and dmm1:
+                logging.info('Motor1 communication back, re-enabling...')
+                enable_motors()
+        else:
+            if DISABLED is True and dmm1 and dmm2:
+                logging.info('Motor1 and Motor2 communication back, re-enabling...')
+                enable_motors()
 
 
 
