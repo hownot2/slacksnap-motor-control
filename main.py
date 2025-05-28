@@ -128,26 +128,48 @@ async def init_motor(path, name):
 
 
 async def read_motor(dmm, name):
+    global RPM_TARGET
+
     try:
         return dmm.read_AbsPos32()
     except BaseException as e:
         # any problems, kill both motors
+        RPM_TARGET = 0
         set_motors(0)
         disable_motors()
 
-        logging.error('Problem reading %s: %s - %s', name, e.__class__.__name__, e)
+        logging.error('Problem reading position of %s: %s - %s', name, e.__class__.__name__, e)
+        await send_mqtt('server/motor_status', name + ' disconnected')
+        dmm = False
+        return False
+
+async def check_status(dmm, name):
+    global RPM_TARGET
+
+    try:
+        status = dmm.read_Status()
+        current = dmm.read_TrqCurrent()
+        logging.info('%s status, alarm: %s, current: %s', name, status['alarm'] or 'None', current)
+    except BaseException as e:
+        # any problems, kill both motors
+        RPM_TARGET = 0
+        set_motors(0)
+        disable_motors()
+
+        logging.error('Problem reading status of %s: %s - %s', name, e.__class__.__name__, e)
         await send_mqtt('server/motor_status', name + ' disconnected')
         dmm = False
         return False
 
 
 async def check_sync(rev1, rev2):
-    global dmm1, dmm2
+    global dmm1, dmm2, RPM_TARGET
 
     difference = rev1 - rev2
 
     if abs(difference) > 2.0:
         # out of sync, kill both motors
+        RPM_TARGET = 0
         set_motors(0)
         disable_motors()
 
@@ -176,6 +198,12 @@ async def monitor_dyn4():
             dmm2 = await init_motor('/dev/ttyUSB1', 'Motor2')
             continue
 
+        if dmm1:
+            await check_status(dmm1, 'Motor1')
+
+        if dmm2:
+            await check_status(dmm2, 'Motor2')
+
         pos1 = await read_motor(dmm1, 'Motor1')
         if pos1 is False:
             dmm1 = False
@@ -202,25 +230,25 @@ async def monitor_dyn4():
             kp = 0.01
             difference = rev1 - rev2
 
-            if abs(difference) > 0.25:
-                if RPM_TARGET > 0:
-                    if rev1 > rev2:
-                        motor1_scaler = 1.0 - kp * abs(difference)
-                        motor1_scaler = min(motor1_scaler, 1.0)  # clamp to range 0.5 - 1.0
-                        motor1_scaler = max(motor1_scaler, 0.5)
-                    elif rev2 > rev1:
-                        motor2_scaler = 1.0 - kp * abs(difference)
-                        motor2_scaler = min(motor2_scaler, 1.0)  # clamp to range 0.5 - 1.0
-                        motor2_scaler = max(motor2_scaler, 0.5)
-                elif RPM_TARGET < 0:
-                    if rev1 < rev2:
-                        motor1_scaler = 1.0 - kp * abs(difference)
-                        motor1_scaler = min(motor1_scaler, 1.0)  # clamp to range 0.5 - 1.0
-                        motor1_scaler = max(motor1_scaler, 0.5)
-                    elif rev2 < rev1:
-                        motor2_scaler = 1.0 - kp * abs(difference)
-                        motor2_scaler = min(motor2_scaler, 1.0)  # clamp to range 0.5 - 1.0
-                        motor2_scaler = max(motor2_scaler, 0.5)
+            #if abs(difference) > 0.25:
+            #    if RPM_TARGET > 0:
+            #        if rev1 > rev2:
+            #            motor1_scaler = 1.0 - kp * abs(difference)
+            #            motor1_scaler = min(motor1_scaler, 1.0)  # clamp to range 0.5 - 1.0
+            #            motor1_scaler = max(motor1_scaler, 0.5)
+            #        elif rev2 > rev1:
+            #            motor2_scaler = 1.0 - kp * abs(difference)
+            #            motor2_scaler = min(motor2_scaler, 1.0)  # clamp to range 0.5 - 1.0
+            #            motor2_scaler = max(motor2_scaler, 0.5)
+            #    elif RPM_TARGET < 0:
+            #        if rev1 < rev2:
+            #            motor1_scaler = 1.0 - kp * abs(difference)
+            #            motor1_scaler = min(motor1_scaler, 1.0)  # clamp to range 0.5 - 1.0
+            #            motor1_scaler = max(motor1_scaler, 0.5)
+            #        elif rev2 < rev1:
+            #            motor2_scaler = 1.0 - kp * abs(difference)
+            #            motor2_scaler = min(motor2_scaler, 1.0)  # clamp to range 0.5 - 1.0
+            #            motor2_scaler = max(motor2_scaler, 0.5)
 
             motor1_rpm = int(RPM_TARGET * motor1_scaler)
             motor2_rpm = int(RPM_TARGET * motor2_scaler)
