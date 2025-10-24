@@ -12,9 +12,11 @@ import aiomqtt
 import serial
 import glob
 import time
+import RPi.GPIO as GPIO
 
 import dyn4
 import relays
+import limits
 
 ENCODER_PPR = 65536
 
@@ -22,6 +24,13 @@ ONE_MOTOR = os.environ.get('ONE_MOTOR', False)
 
 dmm1 = None
 dmm2 = None
+
+
+# 2025-10-24 facts:
+#    Motor1 is left
+#    Motor2 is right
+#    Positive RPM moves the crosshead down
+#    Negative RPM moves the crosshead up
 
 
 MOTOR_EN1 = 1
@@ -256,6 +265,27 @@ async def monitor_dyn4():
             if abs(difference) > 0.25:
                 logging.info('Pos difference: %s, rev1: %s, rev2: %s, scaler1: %s, scaler2: %s, target: %s, rpm1: %s, rpm2: %s',
                     difference, rev1, rev2, motor1_scaler, motor2_scaler, RPM_TARGET, motor1_rpm, motor2_rpm)
+
+
+        # check limit switches
+        if ONE_MOTOR:
+            pass
+        else:
+            GOING_DOWNWARD = motor1_rpm > 0 or motor2_rpm > 0
+            GOING_UPWARD = motor1_rpm < 0 or motor2_rpm < 0
+
+            if GOING_DOWNWARD:
+                if GPIO.input(limits.LIMIT_LOWER_RIGHT) == limits.PATH_BLOCKED or GPIO.input(limits.LIMIT_LOWER_LEFT) == limits.PATH_BLOCKED:
+                    motor1_rpm = 0
+                    motor2_rpm = 0
+                    logging.info('Lower limit switch hit, preventing downward travel.')
+
+            if GOING_UPWARD:
+                if GPIO.input(limits.LIMIT_UPPER_RIGHT) == limits.PATH_BLOCKED:
+                    motor1_rpm = 0
+                    motor2_rpm = 0
+                    logging.info('Upper limit switch hit, preventing upward travel.')
+
 
         if ONE_MOTOR:
             logging.debug('Setting motor1: %s', motor1_rpm)
