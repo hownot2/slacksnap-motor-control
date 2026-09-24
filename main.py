@@ -327,8 +327,8 @@ def main():
 
     loop = asyncio.get_event_loop()
 
-    a = loop.create_task(monitor_dyn4()).add_done_callback(task_died)
-    b = loop.create_task(monitor_mqtt()).add_done_callback(task_died)
+    loop.create_task(monitor_dyn4()).add_done_callback(task_died)
+    loop.create_task(monitor_mqtt()).add_done_callback(task_died)
 
     loop.run_forever()
 
