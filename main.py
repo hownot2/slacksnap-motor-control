@@ -24,6 +24,7 @@ ONE_MOTOR = os.environ.get('ONE_MOTOR', False)
 
 dmm1 = None
 dmm2 = None
+mqtt_client = None
 
 
 # 2025-10-24 facts:
@@ -58,9 +59,10 @@ def disable_motors():
 
 
 async def send_mqtt(topic, message):
+    if not mqtt_client:
+        raise Exception("No mqtt client present")
     try:
-        async with aiomqtt.Client('localhost') as client:
-            await client.publish(topic, payload=message.encode())
+        await mqtt_client.publish(topic, payload=message.encode())
     except BaseException as e:
         logging.error('Problem sending MQTT topic %s, message %s: %s - %s', topic, message, e.__class__.__name__, e)
         await asyncio.sleep(1)
@@ -101,21 +103,10 @@ async def process_mqtt(message):
         RPM_TARGET = rpm
 
 
-async def monitor_mqtt():
-    await asyncio.sleep(1)
-
-    # from https://sbtinstruments.github.io/aiomqtt/reconnection.html
-    # modified to make new client since their code didn't work
-    # https://github.com/sbtinstruments/aiomqtt/issues/269
-    while True:
-        try:
-            async with aiomqtt.Client('localhost') as client:
-                await client.subscribe('motion/#')
-                async for message in client.messages:
-                    await process_mqtt(message)
-        except aiomqtt.MqttError:
-            logging.info('MQTT connection lost, reconnecting in 1 second...')
-            await asyncio.sleep(1)
+async def monitor_mqtt(client):
+    await client.subscribe('motion/#')
+    async for message in client.messages:
+        await process_mqtt(message)
 
 
 async def init_motor(path, name):
@@ -193,122 +184,131 @@ async def check_sync(rev1, rev2):
     return True
 
 
-async def monitor_dyn4():
+async def update_dyn4():
     global dmm1, dmm2, RPM_TARGET
 
-    while True:
-        await asyncio.sleep(0.1)
+    if not dmm1:
+        dmm1 = await init_motor('/dev/ttyUSB0', 'Motor1')
+        return
 
-        if not dmm1:
-            dmm1 = await init_motor('/dev/ttyUSB0', 'Motor1')
-            continue
+    if not dmm2 and not ONE_MOTOR:
+        dmm2 = await init_motor('/dev/ttyUSB1', 'Motor2')
+        return
 
-        if not dmm2 and not ONE_MOTOR:
-            dmm2 = await init_motor('/dev/ttyUSB1', 'Motor2')
-            continue
+    if dmm1:
+        await check_status(dmm1, 'Motor1')
 
-        if dmm1:
-            await check_status(dmm1, 'Motor1')
+    if dmm2:
+        await check_status(dmm2, 'Motor2')
 
-        if dmm2:
-            await check_status(dmm2, 'Motor2')
+    pos1 = await read_motor(dmm1, 'Motor1')
+    if pos1 is False:
+        dmm1 = False
+        return
+    rev1 = round(pos1 / ENCODER_PPR, 4)
 
-        pos1 = await read_motor(dmm1, 'Motor1')
-        if pos1 is False:
-            dmm1 = False
-            continue
-        rev1 = round(pos1 / ENCODER_PPR, 4)
+    if ONE_MOTOR:
+        revolutions = rev1
+        motor1_rpm = RPM_TARGET
+    else:
+        pos2 = await read_motor(dmm2, 'Motor2')
+        if pos2 is False:
+            dmm2 = False
+            return
+        rev2 = round(pos2 / ENCODER_PPR, 4)
 
-        if ONE_MOTOR:
-            revolutions = rev1
-            motor1_rpm = RPM_TARGET
-        else:
-            pos2 = await read_motor(dmm2, 'Motor2')
-            if pos2 is False:
-                dmm2 = False
-                continue
-            rev2 = round(pos2 / ENCODER_PPR, 4)
+        revolutions = (rev1 + rev2) / 2.0
 
-            revolutions = (rev1 + rev2) / 2.0
+        if not await check_sync(rev1, rev2):
+            return
 
-            if not await check_sync(rev1, rev2):
-                continue
+        motor1_scaler = 1.0
+        motor2_scaler = 1.0
+        kp = 0.01
+        difference = rev1 - rev2
 
-            motor1_scaler = 1.0
-            motor2_scaler = 1.0
-            kp = 0.01
-            difference = rev1 - rev2
+        #if abs(difference) > 0.25:
+        #    if RPM_TARGET > 0:
+        #        if rev1 > rev2:
+        #            motor1_scaler = 1.0 - kp * abs(difference)
+        #            motor1_scaler = min(motor1_scaler, 1.0)  # clamp to range 0.5 - 1.0
+        #            motor1_scaler = max(motor1_scaler, 0.5)
+        #        elif rev2 > rev1:
+        #            motor2_scaler = 1.0 - kp * abs(difference)
+        #            motor2_scaler = min(motor2_scaler, 1.0)  # clamp to range 0.5 - 1.0
+        #            motor2_scaler = max(motor2_scaler, 0.5)
+        #    elif RPM_TARGET < 0:
+        #        if rev1 < rev2:
+        #            motor1_scaler = 1.0 - kp * abs(difference)
+        #            motor1_scaler = min(motor1_scaler, 1.0)  # clamp to range 0.5 - 1.0
+        #            motor1_scaler = max(motor1_scaler, 0.5)
+        #        elif rev2 < rev1:
+        #            motor2_scaler = 1.0 - kp * abs(difference)
+        #            motor2_scaler = min(motor2_scaler, 1.0)  # clamp to range 0.5 - 1.0
+        #            motor2_scaler = max(motor2_scaler, 0.5)
 
-            #if abs(difference) > 0.25:
-            #    if RPM_TARGET > 0:
-            #        if rev1 > rev2:
-            #            motor1_scaler = 1.0 - kp * abs(difference)
-            #            motor1_scaler = min(motor1_scaler, 1.0)  # clamp to range 0.5 - 1.0
-            #            motor1_scaler = max(motor1_scaler, 0.5)
-            #        elif rev2 > rev1:
-            #            motor2_scaler = 1.0 - kp * abs(difference)
-            #            motor2_scaler = min(motor2_scaler, 1.0)  # clamp to range 0.5 - 1.0
-            #            motor2_scaler = max(motor2_scaler, 0.5)
-            #    elif RPM_TARGET < 0:
-            #        if rev1 < rev2:
-            #            motor1_scaler = 1.0 - kp * abs(difference)
-            #            motor1_scaler = min(motor1_scaler, 1.0)  # clamp to range 0.5 - 1.0
-            #            motor1_scaler = max(motor1_scaler, 0.5)
-            #        elif rev2 < rev1:
-            #            motor2_scaler = 1.0 - kp * abs(difference)
-            #            motor2_scaler = min(motor2_scaler, 1.0)  # clamp to range 0.5 - 1.0
-            #            motor2_scaler = max(motor2_scaler, 0.5)
+        motor1_rpm = int(RPM_TARGET * motor1_scaler)
+        motor2_rpm = int(RPM_TARGET * motor2_scaler)
 
-            motor1_rpm = int(RPM_TARGET * motor1_scaler)
-            motor2_rpm = int(RPM_TARGET * motor2_scaler)
-
-            if abs(difference) > 0.25:
-                logging.info('Pos difference: %s, rev1: %s, rev2: %s, scaler1: %s, scaler2: %s, target: %s, rpm1: %s, rpm2: %s',
-                    difference, rev1, rev2, motor1_scaler, motor2_scaler, RPM_TARGET, motor1_rpm, motor2_rpm)
+        if abs(difference) > 0.25:
+            logging.info('Pos difference: %s, rev1: %s, rev2: %s, scaler1: %s, scaler2: %s, target: %s, rpm1: %s, rpm2: %s',
+                difference, rev1, rev2, motor1_scaler, motor2_scaler, RPM_TARGET, motor1_rpm, motor2_rpm)
 
 
-        # check limit switches
-        if ONE_MOTOR:
-            pass
-        else:
-            GOING_DOWNWARD = motor1_rpm > 0 or motor2_rpm > 0
-            GOING_UPWARD = motor1_rpm < 0 or motor2_rpm < 0
+    # check limit switches
+    if ONE_MOTOR:
+        pass
+    else:
+        GOING_DOWNWARD = motor1_rpm > 0 or motor2_rpm > 0
+        GOING_UPWARD = motor1_rpm < 0 or motor2_rpm < 0
 
-            if GOING_DOWNWARD:
-                if GPIO.input(limits.LIMIT_LOWER_RIGHT) == limits.PATH_BLOCKED or GPIO.input(limits.LIMIT_LOWER_LEFT) == limits.PATH_BLOCKED:
-                    motor1_rpm = 0
-                    motor2_rpm = 0
-                    logging.info('Lower limit switch hit, preventing downward travel.')
+        if GOING_DOWNWARD:
+            if GPIO.input(limits.LIMIT_LOWER_RIGHT) == limits.PATH_BLOCKED or GPIO.input(limits.LIMIT_LOWER_LEFT) == limits.PATH_BLOCKED:
+                motor1_rpm = 0
+                motor2_rpm = 0
+                logging.info('Lower limit switch hit, preventing downward travel.')
 
-            if GOING_UPWARD:
-                if GPIO.input(limits.LIMIT_UPPER_RIGHT) == limits.PATH_BLOCKED:
-                    motor1_rpm = 0
-                    motor2_rpm = 0
-                    logging.info('Upper limit switch hit, preventing upward travel.')
-
-
-        if ONE_MOTOR:
-            logging.debug('Setting motor1: %s', motor1_rpm)
-            dmm1.set_speed(motor1_rpm)
-        else:
-            logging.debug('Setting motor1: %s, motor2: %s', motor1_rpm, motor2_rpm)
-            dmm1.set_speed(motor1_rpm)
-            dmm2.set_speed(motor2_rpm)
+        if GOING_UPWARD:
+            if GPIO.input(limits.LIMIT_UPPER_RIGHT) == limits.PATH_BLOCKED:
+                motor1_rpm = 0
+                motor2_rpm = 0
+                logging.info('Upper limit switch hit, preventing upward travel.')
 
 
-        topic = 'server/position'
-        message = str(round(revolutions, 5))
-        await send_mqtt(topic, message)
+    if ONE_MOTOR:
+        logging.debug('Setting motor1: %s', motor1_rpm)
+        dmm1.set_speed(motor1_rpm)
+    else:
+        logging.debug('Setting motor1: %s, motor2: %s', motor1_rpm, motor2_rpm)
+        dmm1.set_speed(motor1_rpm)
+        dmm2.set_speed(motor2_rpm)
 
 
-        if ONE_MOTOR:
-            if DISABLED is True and dmm1:
-                logging.info('Motor1 communication back, re-enabling...')
-                enable_motors()
-        else:
-            if DISABLED is True and dmm1 and dmm2:
-                logging.info('Motor1 and Motor2 communication back, re-enabling...')
-                enable_motors()
+    topic = 'server/position'
+    message = str(round(revolutions, 5))
+    await send_mqtt(topic, message)
+
+
+    if ONE_MOTOR:
+        if DISABLED is True and dmm1:
+            logging.info('Motor1 communication back, re-enabling...')
+            enable_motors()
+    else:
+        if DISABLED is True and dmm1 and dmm2:
+            logging.info('Motor1 and Motor2 communication back, re-enabling...')
+            enable_motors()
+
+
+async def monitor_dyn4():
+    global RPM_TARGET
+
+    try:
+        while True:
+            await asyncio.sleep(0.1)
+            await update_dyn4()
+    finally:
+        RPM_TARGET = 0
+        set_motors(0)
 
 
 
@@ -321,16 +321,30 @@ def task_died(future):
     exit()
 
 
+async def async_main():
+    global mqtt_client
+    while True:
+        try:
+            async with aiomqtt.Client("localhost") as mqtt_client:
+                dyn4_task = asyncio.create_task(monitor_dyn4())
+                dyn4_task.add_done_callback(task_died)
+                try:
+                    await monitor_mqtt(mqtt_client)
+                finally:
+                    dyn4_task.remove_done_callback(task_died)
+                    dyn4_task.cancel()
+        except Exception as e:
+            logging.error(e)
+            logging.error("Sleeping 5 seconds then retrying")
+            mqtt_client = None
+            await asyncio.sleep(5)
+
+
 def main():
     enable_motors()
     time.sleep(2)
 
-    loop = asyncio.get_event_loop()
-
-    loop.create_task(monitor_dyn4()).add_done_callback(task_died)
-    loop.create_task(monitor_mqtt()).add_done_callback(task_died)
-
-    loop.run_forever()
+    asyncio.run(async_main())
 
 
 if __name__ == '__main__':
