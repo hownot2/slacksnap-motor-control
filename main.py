@@ -59,7 +59,6 @@ def disable_motors():
 
 
 async def send_mqtt(topic, message):
-    global mqtt_client
     if not mqtt_client:
         raise Exception("No mqtt client present")
     try:
@@ -104,21 +103,10 @@ async def process_mqtt(message):
         RPM_TARGET = rpm
 
 
-async def monitor_mqtt():
-    await asyncio.sleep(1)
-
-    # from https://sbtinstruments.github.io/aiomqtt/reconnection.html
-    # modified to make new client since their code didn't work
-    # https://github.com/sbtinstruments/aiomqtt/issues/269
-    while True:
-        try:
-            async with aiomqtt.Client('localhost') as client:
-                await client.subscribe('motion/#')
-                async for message in client.messages:
-                    await process_mqtt(message)
-        except aiomqtt.MqttError:
-            logging.info('MQTT connection lost, reconnecting in 1 second...')
-            await asyncio.sleep(1)
+async def monitor_mqtt(client):
+    await client.subscribe('motion/#')
+    async for message in client.messages:
+        await process_mqtt(message)
 
 
 async def init_motor(path, name):
@@ -327,23 +315,18 @@ def task_died(future):
 async def async_main():
     global mqtt_client
     dyn4_task = None
-    mqtt_task = None
     while True:
         try:
             async with aiomqtt.Client("localhost") as mqtt_client:
-                loop = asyncio.get_event_loop()
-
-                if not dyn4_task or dyn4_task.done():
-                    dyn4_task = loop.create_task(monitor_dyn4())
+                if dyn4_task is None:
+                    dyn4_task = asyncio.create_task(monitor_dyn4())
                     dyn4_task.add_done_callback(task_died)
 
-                if not mqtt_task or mqtt_task.done():
-                    mqtt_task = loop.create_task(monitor_mqtt())
-                    mqtt_task.add_done_callback(task_died)
-                await asyncio.Event().wait()
+                await monitor_mqtt(mqtt_client)
         except Exception as e:
             logging.error(e)
             logging.error("Sleeping 5 seconds then retrying")
+            mqtt_client = None
             await asyncio.sleep(5)
 
 
@@ -351,8 +334,7 @@ def main():
     enable_motors()
     time.sleep(2)
 
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(async_main())
+    asyncio.run(async_main())
 
 
 if __name__ == '__main__':
