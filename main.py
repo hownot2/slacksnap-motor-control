@@ -63,7 +63,6 @@ async def send_mqtt(topic, message):
     if not mqtt_client:
         raise Exception("No mqtt client present")
     try:
-        print("sending payload")
         await mqtt_client.publish(topic, payload=message.encode())
     except BaseException as e:
         logging.error('Problem sending MQTT topic %s, message %s: %s - %s', topic, message, e.__class__.__name__, e)
@@ -341,8 +340,7 @@ async def async_main():
                 if not mqtt_task or mqtt_task.done():
                     mqtt_task = loop.create_task(monitor_mqtt())
                     mqtt_task.add_done_callback(task_died)
-                while True:
-                    pass
+                await asyncio.Event().wait()
         except Exception as e:
             logging.error(e)
             logging.error("Sleeping 5 seconds then retrying")
