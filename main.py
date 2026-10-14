@@ -24,6 +24,7 @@ ONE_MOTOR = os.environ.get('ONE_MOTOR', False)
 
 dmm1 = None
 dmm2 = None
+mqtt_client = None
 
 
 # 2025-10-24 facts:
@@ -58,9 +59,12 @@ def disable_motors():
 
 
 async def send_mqtt(topic, message):
+    global mqtt_client
+    if not mqtt_client:
+        raise Exception("No mqtt client present")
     try:
-        async with aiomqtt.Client('localhost') as client:
-            await client.publish(topic, payload=message.encode())
+        print("sending payload")
+        await mqtt_client.publish(topic, payload=message.encode())
     except BaseException as e:
         logging.error('Problem sending MQTT topic %s, message %s: %s - %s', topic, message, e.__class__.__name__, e)
         await asyncio.sleep(1)
@@ -321,16 +325,36 @@ def task_died(future):
     exit()
 
 
+async def async_main():
+    global mqtt_client
+    dyn4_task = None
+    mqtt_task = None
+    while True:
+        try:
+            async with aiomqtt.Client("localhost") as mqtt_client:
+                loop = asyncio.get_event_loop()
+
+                if not dyn4_task or dyn4_task.done():
+                    dyn4_task = loop.create_task(monitor_dyn4())
+                    dyn4_task.add_done_callback(task_died)
+
+                if not mqtt_task or mqtt_task.done():
+                    mqtt_task = loop.create_task(monitor_mqtt())
+                    mqtt_task.add_done_callback(task_died)
+                while True:
+                    pass
+        except Exception as e:
+            logging.error(e)
+            logging.error("Sleeping 5 seconds then retrying")
+            await asyncio.sleep(5)
+
+
 def main():
     enable_motors()
     time.sleep(2)
 
     loop = asyncio.get_event_loop()
-
-    a = loop.create_task(monitor_dyn4()).add_done_callback(task_died)
-    b = loop.create_task(monitor_mqtt()).add_done_callback(task_died)
-
-    loop.run_forever()
+    loop.run_until_complete(async_main())
 
 
 if __name__ == '__main__':
