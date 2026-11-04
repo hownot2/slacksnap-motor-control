@@ -39,9 +39,6 @@ MOTOR_EN2 = 2
 DISABLED = None
 RPM_TARGET = 0
 
-# RPM_TARGET holds until the next command, so if the server dies mid-move the
-# motors keep going. The server re-sends a non-zero RPM while moving, so silence
-# for this long means it's gone.
 RPM_TIMEOUT_S = 2.0
 RPM_RECEIVED_AT = 0
 
