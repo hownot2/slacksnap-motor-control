@@ -39,6 +39,9 @@ MOTOR_EN2 = 2
 DISABLED = None
 RPM_TARGET = 0
 
+RPM_TIMEOUT_S = 2.0
+RPM_RECEIVED_AT = 0
+
 def enable_motors():
     global DISABLED
 
@@ -88,7 +91,7 @@ def set_motors(rpm):
 
 
 async def process_mqtt(message):
-    global RPM_TARGET
+    global RPM_TARGET, RPM_RECEIVED_AT
 
     try:
         text = message.payload.decode()
@@ -101,6 +104,7 @@ async def process_mqtt(message):
     if topic == 'motion/set_rpm':
         rpm = int(float(text))
         RPM_TARGET = rpm
+        RPM_RECEIVED_AT = time.monotonic()
 
 
 async def monitor_mqtt(client):
@@ -299,12 +303,22 @@ async def update_dyn4():
             enable_motors()
 
 
+def stop_if_rpm_stale():
+    global RPM_TARGET
+
+    if RPM_TARGET != 0 and time.monotonic() - RPM_RECEIVED_AT > RPM_TIMEOUT_S:
+        logging.error('No RPM command for %s s, stopping motors.', RPM_TIMEOUT_S)
+        RPM_TARGET = 0
+        set_motors(0)
+
+
 async def monitor_dyn4():
     global RPM_TARGET
 
     try:
         while True:
             await asyncio.sleep(0.1)
+            stop_if_rpm_stale()
             await update_dyn4()
     finally:
         RPM_TARGET = 0
