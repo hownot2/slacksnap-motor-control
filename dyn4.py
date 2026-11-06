@@ -549,7 +549,10 @@ class DMMDrive:
         return rpm
 
     def set_speed(self, rpm):
-        rpm = max(-MAX_RPM, min(int(rpm), MAX_RPM))
+        if rpm > MAX_RPM:
+            rpm = MAX_RPM
+        elif rpm < -MAX_RPM:
+            rpm = -MAX_RPM
         packet = [0x00 | self.drive_id,
                   0x80 | (3 << 5) | 0x0a,
                   0x80 | ((rpm >> (7 * 3)) & 0x7f),
